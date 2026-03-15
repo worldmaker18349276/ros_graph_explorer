@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>ROS Graph Visualizer</title>
+    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <style>
+        body { font-family: sans-serif; margin: 0; }
+        #network-container {
+            width: 100vw;
+            height: 90vh;
+            border-bottom: 1px solid #ccc;
+            background-color: #fafafa;
+        }
+        .controls { padding: 10px; background: #eee; }
+    </style>
+</head>
+<body>
+
+    <div id="info-panel" style="display: none;">
+        <div class="panel-header">
+            <span id="panel-title">Topic Info</span>
+            <span>
+                <button onclick="updatePanel()" class="update-btn">⟳</button>
+                <button onclick="closePanel()" class="close-btn">×</button>
+            </span>
+        </div>
+        <div class="panel-body">
+            <div class="stat-row">
+                <strong>Frequency:</strong> <span id="topic-hz">--</span> Hz
+            </div>
+            <div class="stat-row">
+                <strong>Last Message:</strong>
+                <pre id="topic-msg">Waiting for data...</pre>
+            </div>
+        </div>
+    </div>
+
+    <style>
+        #info-panel {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            width: 400px;
+            max-height: 80vh;
+            background: #1e1e1e; /* Dark theme */
+            color: #d4d4d4;
+            border-radius: 8px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+            font-family: 'Courier New', Courier, monospace;
+            border: 1px solid #333;
+        }
+        .panel-header {
+            padding: 10px 15px;
+            background: #333;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-top-left-radius: 8px;
+            border-top-right-radius: 8px;
+        }
+        .panel-body {
+            padding: 15px;
+            overflow-y: auto;
+        }
+        .stat-row { margin-bottom: 10px; }
+        .update-btn {
+            background: none;
+            border: none;
+            color: white;
+            font-size: 20px;
+            cursor: pointer;
+        }
+        .close-btn {
+            background: none;
+            border: none;
+            color: white;
+            font-size: 20px;
+            cursor: pointer;
+        }
+        #topic-msg {
+            background: #000;
+            padding: 10px;
+            border-radius: 4px;
+            font-size: 12px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            color: #4af626; /* Matrix green */
+        }
+    </style>
+
+    <div class="controls">
+        <button onclick="refresh()" title="dbclick on canvas">Refresh</button>
+        <button onclick="hideSelected()" title="d">Hide Selected</button>
+        <button onclick="showAll()" title="D">Show All Hidden</button>
+        <button onclick="nodeUp()" title="[">Group to Parent</button>
+        <button onclick="nodeDown()" title="]">Expand Group</button>
+    </div>
+    <div id="network-container"></div>
+
+    <script src="index.js"></script>
+</body>
+</html>

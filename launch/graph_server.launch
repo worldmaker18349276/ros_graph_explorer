@@ -1,0 +1,8 @@
+<launch>
+  <arg name="port" default="5000"/>
+  <node pkg="graph_explorer" type="graph_server.py" name="graph_server" output="screen">
+    <param name="~root" value="$(find graph_explorer)/www/"/>
+    <param name="~port" value="$(arg port)"/>
+  </node>
+</launch>
+
