@@ -134,6 +134,11 @@ def run_ros_command(cmd, timeout):
             os.killpg(os.getpgid(process.pid), signal.SIGTERM)
         return f"ERROR: {str(e)}"
 
+# {
+#    topic: string,
+#    frequency: number,
+#    last_message: string,
+# }
 @app.route('/api/topic_info/<path:topic>')
 def get_topic_info(topic):
     topic = "/" + topic
@@ -147,13 +152,17 @@ def get_topic_info(topic):
         "last_message": msg
     })
 
+# {
+#    publishers: {topic: string, nodes: string[]}[],
+#    subscribers: {topic: string, nodes: string[]}[],
+#    node_types: {node: string, type: string}[],
+#    topic_types: {topic: string, type: string}[],
+# }
 @app.route('/api/graph')
 def get_graph():
     master = rosgraph.Master('/graph_explorer')
     try:
         pubs, subs, srvs = master.getSystemState()
-        topic_types = {t: type_str for t, type_str in master.getTopicTypes()}
-        node_types = {}
 
         all_nodes = set()
         for _, nodes in pubs:
@@ -165,14 +174,17 @@ def get_graph():
         for _, nodes in srvs:
             for node in nodes:
                 all_nodes.add(node)
-        for node in all_nodes:
-            node_types[node] = get_node_executable(node)
+
+        publishers = [{"topic": topic, "nodes": nodes} for topic, nodes in pubs]
+        subscribers = [{"topic": topic, "nodes": nodes} for topic, nodes in subs]
+        topic_types = [{"topic": t, "type": type_str} for t, type_str in master.getTopicTypes()]
+        node_types = [{"node": node, "type": get_node_executable(node)} for node in all_nodes]
 
         return jsonify({
-            "publishers": pubs,
-            "subscribers": subs,
-            "node_metadata": node_types,
-            "topic_metadata": topic_types,
+            "publishers": publishers,
+            "subscribers": subscribers,
+            "node_types": node_types,
+            "topic_types": topic_types,
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
