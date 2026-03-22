@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from flask_cors import CORS
-from flask import Flask, jsonify, send_from_directory
+from flask import Flask, jsonify, send_from_directory, Response
 import rospy
 import rosgraph
 import rosservice
@@ -11,6 +11,8 @@ import subprocess
 import shlex
 import signal
 import re
+import yaml
+import json
 
 port = 5000
 root = ""
@@ -60,97 +62,68 @@ def get_node_executable(node_name):
     
     return "unknown"
 
-def get_rostopic_hz(topic, window=5, duration=2.0):
-    """
-    Runs rostopic hz, waits for 'duration' seconds, 
-    then kills it and returns the captured output.
-    """
-    cmd = f"source /opt/ros/noetic/setup.bash && rostopic hz {topic} -w {window}"
-    
-    # Start the process in a new process group so we can kill it easily
-    process = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        shell=True,
-        executable='/bin/bash',
-        preexec_fn=os.setsid 
-    )
-
-    try:
-        # Wait for the specified duration to gather samples
-        time.sleep(duration)
-        
-        # Kill the process group
-        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
-        
-        # Read what was captured
-        stdout, stderr = process.communicate(timeout=1.0)
-        output = stdout.decode('utf-8')
-        
-        # Parse the 'average rate' line
-        if "average rate:" in output:
-            # Splits by 'average rate:' and takes the next numerical value
-            return output.split("average rate:")[1].split('\n')[0].strip()
-        else:
-            return "inf"
-            
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-def run_ros_command(cmd, timeout):
-    """
-    Executes a ROS command. If it times out, it kills the entire 
-    process group to ensure no hanging ROS subscribers remain.
-    """
-    full_cmd = f"source /opt/ros/noetic/setup.bash && {cmd}"
-    
-    # Use start_new_session=True (or preexec_fn=os.setsid) 
-    # to create a process group
-    process = subprocess.Popen(
-        full_cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        shell=True,
-        executable='/bin/bash',
-        start_new_session=True 
-    )
-
-    try:
-        # Wait for the output
-        stdout, stderr = process.communicate(timeout=timeout)
-        return stdout.decode('utf-8').strip()
-
-    except subprocess.TimeoutExpired:
-        # 1. Kill the entire process group
-        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
-        
-        # 2. Cleanup and return a clean error
-        process.communicate() # Final cleanup
-        return f"TIMEOUT: No message received after {timeout} seconds."
-        
-    except Exception as e:
-        if process.pid:
-            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
-        return f"ERROR: {str(e)}"
-
 # {
-#    topic: string,
 #    frequency: number,
-#    last_message: string,
+#    message: string,
+#    error: string,
 # }
 @app.route('/api/topic_info/<path:topic>')
-def get_topic_info(topic):
+def topic_info(topic):
     topic = "/" + topic
-    
-    msg = run_ros_command(f"rostopic echo {topic} -n 1", 5.0)
-    freq = get_rostopic_hz(topic, 5, 2.0)
 
-    return jsonify({
-        "topic": topic,
-        "frequency": freq,
-        "last_message": msg
-    })
+    def generate():
+        # Start rostopic echo as a subprocess
+        process = subprocess.Popen(
+            ['rostopic', 'echo', topic],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True
+        )
+
+        last_update_time = 0
+        msg_count = 0
+        start_time = time.time()
+        buffer = ""
+        
+        try:
+            print(f"start monitoring {topic}...")
+            for line in iter(process.stdout.readline, ""):
+                if line.strip() != "---":
+                    buffer += line
+                    continue
+
+                # We reached the end of a message block
+                try:
+                    current_time = time.time()
+                    msg_count += 1
+                    
+                    # Calculate rolling frequency
+                    elapsed = current_time - start_time
+                    freq = msg_count / elapsed if elapsed > 0 else 0
+                    
+                    # THROTTLE: Only send if 0.5s (2Hz) has passed since last send
+                    if current_time - last_update_time >= 0.5:
+                        parsed_content = yaml.safe_load(buffer)
+                        
+                        payload = {
+                            "frequency": round(freq, 2),
+                            "message": parsed_content,
+                            "error": None
+                        }
+                        
+                        yield f"data: {json.dumps(payload)}\n\n"
+                        last_update_time = current_time
+                        
+                except Exception as e:
+                    yield f"data: {json.dumps({'frequency': 0, 'message': None, 'error': str(e)})}\n\n"
+                
+                buffer = "" # Reset buffer for next message
+
+        finally:
+            process.terminate()
+            print(f"stop monitoring {topic}")
+
+    return Response(generate(), mimetype='text/event-stream')
 
 # {
 #    publishers: {topic: string, nodes: string[]}[],

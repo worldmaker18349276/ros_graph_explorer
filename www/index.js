@@ -209,11 +209,10 @@ class HoldState {
 }
 
 class RosVisualizer {
-  constructor(containerId, graphURL, topicInfoURL) {
+  constructor(containerId, apiURL) {
     this.elements = [];
     this.container = document.getElementById(containerId);
-    this.graphURL = graphURL;
-    this.topicInfoURL = topicInfoURL;
+    this.apiURL = apiURL;
     this.manager = new RosGraphManager();
     this.manager.loadState();
 
@@ -224,7 +223,7 @@ class RosVisualizer {
   }
 
   async init() {
-    await this.manager.refresh(this.graphURL);
+    await this.manager.refresh(`${this.apiURL}/graph`);
     this.render();
     this.setupEvents();
   }
@@ -270,11 +269,11 @@ class RosVisualizer {
         container: this.container,
         elements: elements,
         style: [
-          { selector: 'node', style: { 'label': 'data(name)', 'background-color': '#0074D9' } },
-          { selector: 'node:selected', style: { 'outline-width': 2, 'outline-color': 'gray' } },
-          { selector: 'node.locked', style: { 'border-width': 2, 'border-color': 'black' } },
+          { selector: 'node', style: { 'label': 'data(name)', 'background-color': '#005cac', 'color': '#cccccc' } },
+          { selector: 'node:selected', style: { 'outline-width': 2, 'outline-color': '#656565' } },
+          { selector: 'node.locked', style: { 'border-width': 2, 'border-color': '#3491b3' } },
           { selector: '.hidden', style: { 'display': 'none' } },
-          { selector: 'edge', style: { 'label': 'data(topic)', 'curve-style': 'bezier', 'target-arrow-shape': 'triangle' } },
+          { selector: 'edge', style: { 'label': 'data(topic)', 'curve-style': 'bezier', 'target-arrow-shape': 'triangle', 'line-color': '#043b6c', 'color': '#cccccc' } },
         ],
       });
 
@@ -423,14 +422,12 @@ class RosVisualizer {
 
     this.cy.on('dblclick', 'edge', async (e) => {
       const topic = e.target.data('topic');
-      if (this.activePanels.has(topic)) return;
-
       this.createFloatingPanel(topic);
     });
 
     window.addEventListener("keypress", async (event) => {
       if (event.key === "r") {
-        await this.manager.refresh(this.graphURL);
+        await this.manager.refresh(`${this.apiURL}/graph`);
         this.render();
         this.resetPhysics();
       }
@@ -489,70 +486,75 @@ class RosVisualizer {
       width: 280px; background: white; border: 1px solid #444;
       box-shadow: 4px 4px 15px rgba(0,0,0,0.3); z-index: 1000;
       pointer-events: auto; border-radius: 4px; font-family: monospace;
+      resize: both; overflow: hidden;
+      display: flex; flex-direction: column;
     `;
 
     panel.innerHTML = `
-      <div class="panel-header" style="cursor: move; background: #333; color: white; padding: 5px 10px; display: flex; justify-content: space-between; align-items: center;">
-        <span style="font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px;">${topic}</span>
+      <div class="panel-header" style="cursor:move; background:#333; color:white; padding:5px 10px; display:flex; justify-content:space-between; align-items:center;">
         <div>
-          <button class="refresh-btn" title="Refresh" style="background:none; border:none; color:white; cursor:pointer; padding: 0 5px;">🗘</button>
+          <span class="title" style="font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px;"></span>
+          <span class="freq" style="color:#01FF70; margin-left:10px;"></span>
+        </div>
+        <div style="height:1.2em;">
+          <button class="play-btn" title="Pause/Play" style="background:none; border:none; color:white; cursor:pointer; padding: 0 5px;">⏸</button>
           <button class="close-btn" title="Close" style="background:none; border:none; color:white; cursor:pointer; padding: 0 5px;">✖</button>
         </div>
       </div>
-      <div class="panel-content" style="padding: 10px; font-size: 13px; min-height: 60px;">
-        <div class="loader">Loading topic info...</div>
-      </div>
+      <pre class="panel-content"
+        style="flex:1; margin:0; background:#1e1e1e; color:#dcdcdc; padding:8px; font-size:11px; overflow-y:auto;"
+      >Loading topic info...</pre>
     `;
 
     document.getElementById('panel-container').appendChild(panel);
     this.activePanels.set(topic, panel);
 
+    panel.querySelector('.title').innerText = topic;
+
     // Setup Button Events
     panel.querySelector('.close-btn').onclick = () => {
+      if (panel.eventSource) panel.eventSource.close();
       panel.remove();
       this.activePanels.delete(topic);
     };
 
-    const refreshBtn = panel.querySelector('.refresh-btn');
-    refreshBtn.onclick = () => this.updatePanelData(topic);
+    panel.querySelector('.play-btn').onclick = () => {
+      if (panel.eventSource) {
+        panel.eventSource.close();
+        panel.eventSource = undefined;
+        panel.querySelector('.play-btn').innerText = "▶";
+      } else {
+        panel.eventSource = this.initPanelDataStream(topic, panel);
+        panel.querySelector('.play-btn').innerText = "⏸";
+      }
+    };
 
     this.makeElementDraggable(panel);
     
-    // Initial Load
-    this.updatePanelData(topic);
+    panel.eventSource = this.initPanelDataStream(topic, panel);
   }
 
-  async updatePanelData(topic) {
-    const panel = this.activePanels.get(topic);
-    if (!panel) return;
-
+  initPanelDataStream(topic, panel) {
     const contentArea = panel.querySelector('.panel-content');
-    const refreshBtn = panel.querySelector('.refresh-btn');
+    const freqLabel = panel.querySelector('.panel-header .freq');
 
-    // Visual feedback: Start loading
-    contentArea.style.opacity = '0.5';
-    refreshBtn.style.opacity = '0.5';
-    refreshBtn.style.pointerEvents = 'none';
+    const source = new EventSource(`${this.apiURL}/topic_info${topic}`);
 
-    try {
-      const response = await fetch(`${this.topicInfoURL}${topic}`);
+    source.onmessage = (event) => {
+      const data = JSON.parse(event.data);
       
-      if (!response.ok) throw new Error('Topic not found');
-      
-      const data = await response.json();
+      if (data.error) {
+        contentArea.innerHTML = `<span style="color:red;">${data.error}</span>`;
+      } else {
+        // Update the Header with the frequency
+        freqLabel.innerText = `${data.frequency} Hz`;
 
-      contentArea.innerHTML = `
-        <div style="margin-bottom: 5px;"><strong>Freq:</strong> ${Number.parseFloat(data.frequency).toFixed(2)} Hz</div>
-        <div style="color: #666; font-size: 11px; margin-bottom: 3px;">Last Message:</div>
-        <pre style="margin: 0; background: #f8f8f8; padding: 5px; border: 1px solid #eee; overflow-x: auto; max-height: 150px; white-space: pre-wrap;">${data.last_message}</pre>
-      `;
-    } catch (err) {
-      contentArea.innerHTML = `<div style="color: red;">Error: ${err.message}</div>`;
-    } finally {
-      contentArea.style.opacity = '1';
-      refreshBtn.style.opacity = '1';
-      refreshBtn.style.pointerEvents = 'auto';
-    }
+        // Render the content (JSON.stringify with null, 2 makes it pretty)
+        contentArea.innerText = JSON.stringify(data.message, null, 2);
+      }
+    };
+    
+    return source;
   }
 
   makeElementDraggable(el) {
@@ -580,5 +582,5 @@ class RosVisualizer {
   }
 }
 
-const viz = new RosVisualizer('cy', '/api/graph', '/api/topic_info');
+const viz = new RosVisualizer('cy', '/api');
 viz.init();
