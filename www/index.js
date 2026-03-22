@@ -16,6 +16,7 @@ class RosGraphManager {
     // "canvas": {
     //   viewport?: {zoom: number, pan: {x: number, y: number}},
     //   runPhysics?: boolean,
+    //   exclude?: string,
     // }
     this.states = new Map();
 
@@ -232,6 +233,7 @@ class RosVisualizer {
     const data = this.manager.getData();
 
     const elements = [];
+    const regex = new RegExp((this.manager.getState("canvas").exclude ?? "") || "^$");
 
     // Add Nodes from Manager
     data.nodes.forEach((node) => {
@@ -241,7 +243,7 @@ class RosVisualizer {
         data: {...node},
         locked: node?.locked ?? false,
         classes: [
-          (node?.hidden ?? false) ? 'hidden' : '',
+          regex.test(node.name) || (node?.hidden ?? false) ? 'hidden' : '',
           this.holdState.target == node.id ?
             (this.holdState.locked ? 'locked' : '')
           :
@@ -458,6 +460,18 @@ class RosVisualizer {
     window.addEventListener("unload", () => {
       this.syncStates();
       this.manager.saveState();
+      this.render();
+    });
+
+    const input = document.getElementById('filter-input');
+    input.value = this.manager.getState("canvas").exclude ?? "";
+
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") input.blur();
+    });
+    input.addEventListener('blur', () => {
+      const canvas = this.manager.getState("canvas");
+      canvas.exclude = input.value.trim();
       this.render();
     });
   }
