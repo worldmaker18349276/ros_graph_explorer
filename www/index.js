@@ -13,7 +13,22 @@ class RosGraphManager {
     // [edge_id]: {
     //   hidden?: boolean,
     // }
+    // "canvas": {
+    //   viewport?: {zoom: number, pan: {x: number, y: number}},
+    //   runPhysics?: boolean,
+    // }
     this.states = new Map();
+
+    this.config = {
+      holdTimeout: 400, // ms
+      dragRebounce: 5, // pixel
+      unlockDelay: 100, // ms
+    };
+
+    // {
+    //   nodes: {id: string, name: string, type: string}[],
+    //   edges: {id: string, source: string, target: string, topic: string, type: string}[],
+    // }
     this.data = [];
   }
 
@@ -30,13 +45,20 @@ class RosGraphManager {
   }
   
   saveState() {
-    localStorage.setItem('ros_graph_state', JSON.stringify(Array.from(this.states.entries())));
+    const states_json = JSON.stringify(Array.from(this.states.entries()));
+    const config_json = JSON.stringify(this.config);
+    localStorage.setItem('ros_graph_states', states_json);
+    localStorage.setItem('ros_graph_config', config_json);
   }
 
   loadState() {
-    const saved = localStorage.getItem('ros_graph_cache');
-    if (saved) {
-      this.states = new Map(JSON.parse(saved));
+    const states_json = localStorage.getItem('ros_graph_states');
+    const config_json = localStorage.getItem('ros_graph_config');
+    if (states_json) {
+      this.states = new Map(JSON.parse(states_json));
+    }
+    if (config_json) {
+      this.config = JSON.parse(config_json);
     }
   }
 
@@ -92,27 +114,28 @@ class RosGraphManager {
     return {nodes, edges};
   }
 
+  // {
+  //   nodes: {id: string, name: string, type: string, ...state}[],
+  //   edges: {id: string, source: string, target: string, topic: string, type: string, ...state}[],
+  // }
   getData() {
     return {
-      nodes: this.data.nodes.map(elem => ({...elem, state: this.states.get(elem.id)})),
-      edges: this.data.edges.map(elem => ({...elem, state: this.states.get(elem.id)})),
+      nodes: this.data.nodes.map(elem => ({...elem, ...this.states.get(elem.id)})),
+      edges: this.data.edges.map(elem => ({...elem, ...this.states.get(elem.id)})),
     };
   }
 }
 
 class HoldState {
   constructor(render, config) {
+    this.config = config;
+
     this.target = "";
     this.locked = false;
     this.timer = 0;
     this.holdPos = {x: Infinity, y: Infinity};
     this.prevPos = {x: Infinity, y: Infinity};
     this.render = render;
-
-    this.config = {
-      holdTimeout: config.holdTimeout,
-      dragRebounce: config.dragRebounce,
-    };
   }
   
   grab(pos, id, locked) {
@@ -187,18 +210,15 @@ class HoldState {
 
 class RosVisualizer {
   constructor(containerId, apiUrl) {
-    this.config = {
-      holdTimeout: 400, // ms
-      dragRebounce: 5, // pixel
-      unlockDelay: 100, // ms
-    };
-
     this.elements = [];
     this.container = document.getElementById(containerId);
     this.apiUrl = apiUrl;
     this.manager = new RosGraphManager();
+    this.manager.loadState();
+
     this.cy = undefined;
-    this.holdState = new HoldState(() => this.render(), this.config);
+    this.layout = undefined;
+    this.holdState = new HoldState(() => this.render(), this.manager.config);
   }
 
   async init() {
@@ -217,15 +237,14 @@ class RosVisualizer {
       const is_new = this.cy?.getElementById(node.id)?.empty() ?? true;
       elements.push({
         group: 'nodes',
-        data: { ...node, label: node.name },
-        position: node.state?.position ?? undefined,
-        locked: node.state?.locked ?? false,
+        data: {...node},
+        locked: node?.locked ?? false,
         classes: [
-          (node.state?.hidden ?? false) ? 'hidden' : '',
+          (node?.hidden ?? false) ? 'hidden' : '',
           this.holdState.target == node.id ?
             (this.holdState.locked ? 'locked' : '')
           :
-            ((node.state?.locked ?? false) ? 'locked' : ''),
+            ((node?.locked ?? false) ? 'locked' : ''),
           is_new ? 'new-added' : '',
         ].join(" ")
       });
@@ -236,9 +255,9 @@ class RosVisualizer {
       const is_new = this.cy?.getElementById(edge.id)?.empty() ?? true;
       elements.push({
         group: 'edges',
-        data: { ...edge, label: edge.topic },
+        data: {...edge},
         classes: [
-          (edge.state?.hidden ?? false) ? 'hidden' : '',
+          (edge?.hidden ?? false) ? 'hidden' : '',
           is_new ? 'new-added' : '',
         ].join(" ")
       });
@@ -249,16 +268,41 @@ class RosVisualizer {
         container: this.container,
         elements: elements,
         style: [
-          { selector: 'node', style: { 'label': 'data(label)', 'background-color': '#0074D9' } },
-          { selector: 'node.locked', style: { 'border-width': 2 } },
+          { selector: 'node', style: { 'label': 'data(name)', 'background-color': '#0074D9' } },
+          { selector: 'node:selected', style: { 'outline-width': 2, 'outline-color': 'gray' } },
+          { selector: 'node.locked', style: { 'border-width': 2, 'border-color': 'black' } },
           { selector: '.hidden', style: { 'display': 'none' } },
-          { selector: 'edge', style: { 'label': 'data(label)', 'curve-style': 'bezier', 'target-arrow-shape': 'triangle' } },
-          // { selector: 'node.new-added', style: { 'border-width': 2, 'border-color': '#2ECC40', 'border-style': 'dashed' } },
+          { selector: 'edge', style: { 'label': 'data(topic)', 'curve-style': 'bezier', 'target-arrow-shape': 'triangle' } },
         ],
       });
+
+      this.cy.batch(() => {
+        data.nodes.forEach((node) => {
+          if (node?.position === undefined) return;
+          const elem = this.cy.getElementById(node.id);
+          if (elem.locked()) {
+            elem.unlock();
+            elem.position(node.position);
+            elem.lock();
+          } else {
+            elem.position(node.position);
+          }
+        });
+        const canvas = this.manager.getState("canvas");
+        if (canvas.viewport)
+          this.cy.viewport({...canvas.viewport});
+      });
+      
       this.resetPhysics();
     } else {
       this.cy.json({ elements: elements });
+
+      data.nodes.forEach((node) => {
+        if (node?.position === undefined) return;
+        const elem = this.cy.getElementById(node.id);
+        if (elem.hasClass("new-added"))
+          elem.position(node.position);
+      });
     }
   }
 
@@ -301,7 +345,8 @@ class RosVisualizer {
 
     this.layout = this.cy.makeLayout(options);
 
-    this.layout.run();
+    if (this.manager.getState("canvas")?.runPhysics ?? true)
+      this.layout.run();
   }
 
   setupEvents() {
@@ -356,7 +401,7 @@ class RosVisualizer {
           const state = this.manager.getState(id);
           state.locked = false;
           this.render();
-        }, this.config.unlockDelay);
+        }, this.manager.config.unlockDelay);
       }
     });
 
@@ -381,15 +426,49 @@ class RosVisualizer {
         this.render();
         this.resetPhysics();
       }
-    })
+      if (event.key === "d") {
+        this.cy.elements(":selected").forEach((e) => {
+          const state = this.manager.getState(e.id());
+          state.hidden = true;
+        });
+        this.render();
+      }
+      if (event.key === "D") {
+        for (const state of this.manager.states.values())
+          state.hidden = false;
+        this.render();
+      }
+      if (event.key === " ") {
+        const canvas = this.manager.getState("canvas");
+        if (canvas?.runPhysics ?? true) {
+          canvas.runPhysics = false;
+          this.layout?.stop();
+        } else {
+          canvas.runPhysics = true;
+          this.layout?.run();
+        }
+      }
+    });
+    
+    window.addEventListener("unload", () => {
+      this.syncStates();
+      this.manager.saveState();
+      this.render();
+    });
   }
 
-  // // Helper to sync specific node visual state without full re-render
-  // syncNodeState(id) {
-  //   const data = this.manager.nodes.get(id);
-  //   const cyNode = this.cy.getElementById(id);
-  //   data.locked ? cyNode.lock() : cyNode.unlock();
-  // }
+  syncStates() {
+    this.cy.nodes().forEach((node) => {
+      const pos = node.position();
+      const data = this.manager.getState(node.id());
+      data.position = {x: pos.x, y: pos.y};
+    });
+
+    const zoom = this.cy.zoom();
+    const pan = this.cy.pan();
+    const canvas = this.manager.getState("canvas");
+    canvas.viewport = {zoom, pan: {x: pan.x, y: pan.y}};
+  }
 }
 
 const viz = new RosVisualizer('cy', '/api/graph');
