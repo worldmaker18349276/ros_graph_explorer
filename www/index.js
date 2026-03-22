@@ -209,20 +209,22 @@ class HoldState {
 }
 
 class RosVisualizer {
-  constructor(containerId, apiUrl) {
+  constructor(containerId, graphURL, topicInfoURL) {
     this.elements = [];
     this.container = document.getElementById(containerId);
-    this.apiUrl = apiUrl;
+    this.graphURL = graphURL;
+    this.topicInfoURL = topicInfoURL;
     this.manager = new RosGraphManager();
     this.manager.loadState();
 
     this.cy = undefined;
     this.layout = undefined;
     this.holdState = new HoldState(() => this.render(), this.manager.config);
+    this.activePanels = new Map();
   }
 
   async init() {
-    await this.manager.refresh(this.apiUrl);
+    await this.manager.refresh(this.graphURL);
     this.render();
     this.setupEvents();
   }
@@ -405,24 +407,30 @@ class RosVisualizer {
       }
     });
 
-    // HIDE: Double click
-    this.cy.on('dblclick', (e) => {
-      if (e.target !== this.cy) {
-        const id = e.target.id();
-        const state = this.manager.getState(id);
-        state.hidden = true;
-        this.render();
+    // this.cy.on('dblclick', (e) => {
+    //   if (e.target !== this.cy) {
+    //     const id = e.target.id();
+    //     const state = this.manager.getState(id);
+    //     state.hidden = true;
+    //     this.render();
+    //   
+    //   } else {
+    //     for (const state of this.manager.states.values())
+    //       state.hidden = false;
+    //     this.render();
+    //   }
+    // });
 
-      } else {
-        for (const state of this.manager.states.values())
-          state.hidden = false;
-        this.render();
-      }
+    this.cy.on('dblclick', 'edge', async (e) => {
+      const topic = e.target.data('topic');
+      if (this.activePanels.has(topic)) return;
+
+      this.createFloatingPanel(topic);
     });
 
     window.addEventListener("keypress", async (event) => {
       if (event.key === "r") {
-        await this.manager.refresh(this.apiUrl);
+        await this.manager.refresh(this.graphURL);
         this.render();
         this.resetPhysics();
       }
@@ -469,7 +477,108 @@ class RosVisualizer {
     const canvas = this.manager.getState("canvas");
     canvas.viewport = {zoom, pan: {x: pan.x, y: pan.y}};
   }
+
+  createFloatingPanel(topic) {
+    if (this.activePanels.has(topic)) return;
+
+    const panel = document.createElement('div');
+    panel.className = 'floating-panel';
+    // Note: Add 'user-select: none' to the header to prevent text highlighting while dragging
+    panel.style.cssText = `
+      position: absolute; left: 150px; top: 150px;
+      width: 280px; background: white; border: 1px solid #444;
+      box-shadow: 4px 4px 15px rgba(0,0,0,0.3); z-index: 1000;
+      pointer-events: auto; border-radius: 4px; font-family: monospace;
+    `;
+
+    panel.innerHTML = `
+      <div class="panel-header" style="cursor: move; background: #333; color: white; padding: 5px 10px; display: flex; justify-content: space-between; align-items: center;">
+        <span style="font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px;">${topic}</span>
+        <div>
+          <button class="refresh-btn" title="Refresh" style="background:none; border:none; color:white; cursor:pointer; padding: 0 5px;">🗘</button>
+          <button class="close-btn" title="Close" style="background:none; border:none; color:white; cursor:pointer; padding: 0 5px;">✖</button>
+        </div>
+      </div>
+      <div class="panel-content" style="padding: 10px; font-size: 13px; min-height: 60px;">
+        <div class="loader">Loading topic info...</div>
+      </div>
+    `;
+
+    document.getElementById('panel-container').appendChild(panel);
+    this.activePanels.set(topic, panel);
+
+    // Setup Button Events
+    panel.querySelector('.close-btn').onclick = () => {
+      panel.remove();
+      this.activePanels.delete(topic);
+    };
+
+    const refreshBtn = panel.querySelector('.refresh-btn');
+    refreshBtn.onclick = () => this.updatePanelData(topic);
+
+    this.makeElementDraggable(panel);
+    
+    // Initial Load
+    this.updatePanelData(topic);
+  }
+
+  async updatePanelData(topic) {
+    const panel = this.activePanels.get(topic);
+    if (!panel) return;
+
+    const contentArea = panel.querySelector('.panel-content');
+    const refreshBtn = panel.querySelector('.refresh-btn');
+
+    // Visual feedback: Start loading
+    contentArea.style.opacity = '0.5';
+    refreshBtn.style.opacity = '0.5';
+    refreshBtn.style.pointerEvents = 'none';
+
+    try {
+      const response = await fetch(`${this.topicInfoURL}${topic}`);
+      
+      if (!response.ok) throw new Error('Topic not found');
+      
+      const data = await response.json();
+
+      contentArea.innerHTML = `
+        <div style="margin-bottom: 5px;"><strong>Freq:</strong> ${Number.parseFloat(data.frequency).toFixed(2)} Hz</div>
+        <div style="color: #666; font-size: 11px; margin-bottom: 3px;">Last Message:</div>
+        <pre style="margin: 0; background: #f8f8f8; padding: 5px; border: 1px solid #eee; overflow-x: auto; max-height: 150px; white-space: pre-wrap;">${data.last_message}</pre>
+      `;
+    } catch (err) {
+      contentArea.innerHTML = `<div style="color: red;">Error: ${err.message}</div>`;
+    } finally {
+      contentArea.style.opacity = '1';
+      refreshBtn.style.opacity = '1';
+      refreshBtn.style.pointerEvents = 'auto';
+    }
+  }
+
+  makeElementDraggable(el) {
+    const header = el.querySelector('.panel-header');
+    let dx = 0, dy = 0, x = 0, y = 0;
+
+    header.onmousedown = (e) => {
+      e.preventDefault();
+      x = e.clientX;
+      y = e.clientY;
+      document.onmouseup = () => {
+        document.onmouseup = null;
+        document.onmousemove = null;
+      };
+      document.onmousemove = (e) => {
+        e.preventDefault();
+        dx = e.clientX - x;
+        dy = e.clientY - y;
+        x = e.clientX;
+        y = e.clientY;
+        el.style.top = (el.offsetTop + dy) + "px";
+        el.style.left = (el.offsetLeft + dx) + "px";
+      };
+    };
+  }
 }
 
-const viz = new RosVisualizer('cy', '/api/graph');
+const viz = new RosVisualizer('cy', '/api/graph', '/api/topic_info');
 viz.init();
